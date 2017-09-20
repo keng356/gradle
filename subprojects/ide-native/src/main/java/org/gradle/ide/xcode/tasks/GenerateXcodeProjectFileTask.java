@@ -32,6 +32,7 @@ import org.gradle.ide.xcode.internal.xcodeproj.PBXLegacyTarget;
 import org.gradle.ide.xcode.internal.xcodeproj.PBXNativeTarget;
 import org.gradle.ide.xcode.internal.xcodeproj.PBXProject;
 import org.gradle.ide.xcode.internal.xcodeproj.PBXReference;
+import org.gradle.ide.xcode.internal.xcodeproj.PBXShellScriptBuildPhase;
 import org.gradle.ide.xcode.internal.xcodeproj.PBXSourcesBuildPhase;
 import org.gradle.ide.xcode.internal.xcodeproj.PBXTarget;
 import org.gradle.ide.xcode.internal.xcodeproj.XcodeprojSerializer;
@@ -68,6 +69,7 @@ public class GenerateXcodeProjectFileTask extends PropertyListGeneratorTask<Xcod
 
         project.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Debug");
         project.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Release");
+        project.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("__GradleTestRunner_Debug");
 
         for (File source : xcodeProject.getSources()) {
             PBXFileReference fileReference = toFileReference(source);
@@ -75,15 +77,16 @@ public class GenerateXcodeProjectFileTask extends PropertyListGeneratorTask<Xcod
             project.getMainGroup().getChildren().add(fileReference);
         }
 
-        XcodeTarget target = xcodeProject.getTarget();
-        if (target != null) {
+        for (XcodeTarget target : xcodeProject.getTargets()) {
             project.getTargets().add(toGradlePbxTarget(target));
             project.getTargets().add(toIndexPbxTarget(target));
 
-            File debugOutputFile = target.getDebugOutputFile().get().getAsFile();
-            PBXFileReference fileReference = new PBXFileReference(debugOutputFile.getName(), debugOutputFile.getAbsolutePath(), PBXReference.SourceTree.ABSOLUTE);
-            fileReference.setExplicitFileType(Optional.of(target.getOutputFileType()));
-            project.getMainGroup().getOrCreateChildGroupByName(PRODUCTS_GROUP_NAME).getChildren().add(fileReference);
+            if (!PBXTarget.ProductType.UNIT_TEST.equals(target.getProductType())) {
+                File debugOutputFile = target.getDebugOutputFile().get().getAsFile();
+                PBXFileReference fileReference = new PBXFileReference(debugOutputFile.getName(), debugOutputFile.getAbsolutePath(), PBXReference.SourceTree.ABSOLUTE);
+                fileReference.setExplicitFileType(Optional.of(target.getOutputFileType()));
+                project.getMainGroup().getOrCreateChildGroupByName(PRODUCTS_GROUP_NAME).getChildren().add(fileReference);
+            }
         }
 
         XcodeprojSerializer serializer = new XcodeprojSerializer(gidGenerator, project);
@@ -108,17 +111,78 @@ public class GenerateXcodeProjectFileTask extends PropertyListGeneratorTask<Xcod
     }
 
     private PBXTarget toGradlePbxTarget(XcodeTarget xcodeTarget) {
+        if (PBXTarget.ProductType.UNIT_TEST.equals(xcodeTarget.getProductType())) {
+            PBXShellScriptBuildPhase hackBuildPhase = new PBXShellScriptBuildPhase();
+            hackBuildPhase.setShellPath("/bin/sh");
+            hackBuildPhase.setShellScript("# Script to generate specific Swift files Xcode expects when running tests.\n"
+                + "set -eu\n"
+                + "ARCH_ARRAY=($ARCHS)\n"
+                + "SUFFIXES=(swiftdoc swiftmodule h)\n"
+                + "for ARCH in \"${ARCH_ARRAY[@]}\"\n"
+                + "do\n"
+                + "  for SUFFIX in \"${SUFFIXES[@]}\"\n"
+                + "  do\n"
+                + "    touch \"$OBJECT_FILE_DIR_normal/$ARCH/$PRODUCT_NAME.$SUFFIX\"\n"
+                + "  done\n"
+                + "done");
+
+            PBXSourcesBuildPhase sourcesBuildPhase = new PBXSourcesBuildPhase();
+            for (File file : xcodeTarget.getSources()) {
+                PBXFileReference fileReference = pathToFileReference.get(file.getAbsolutePath());
+                sourcesBuildPhase.getFiles().add(new PBXBuildFile(fileReference));
+            }
+
+            PBXShellScriptBuildPhase gradleBuildPhase = new PBXShellScriptBuildPhase();
+            gradleBuildPhase.setShellPath("/bin/sh");
+            gradleBuildPhase.setShellScript("exec \"" + xcodeTarget.getGradleCommand() + "\" " + xcodeTarget.getTaskName() + " < /dev/null");
+
+            PBXNativeTarget target = new PBXNativeTarget(xcodeTarget.getName(), xcodeTarget.getProductType());
+            target.setProductName(xcodeTarget.getProductName());
+            target.setGlobalID(xcodeTarget.getId());
+            // Note the order in which the build phase are added is important
+            target.getBuildPhases().add(hackBuildPhase);
+            target.getBuildPhases().add(sourcesBuildPhase);
+            target.getBuildPhases().add(gradleBuildPhase);
+            File outputFile = xcodeTarget.getDebugOutputFile().get().getAsFile();
+            target.setProductReference(new PBXFileReference(outputFile.getName(), outputFile.getAbsolutePath(), PBXReference.SourceTree.ABSOLUTE));
+            NSDictionary debugSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Debug").getBuildSettings();
+            NSDictionary releaseSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Release").getBuildSettings();
+            NSDictionary testRunnerSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("__GradleTestRunner_Debug").getBuildSettings();
+
+            testRunnerSettings.put("SWIFT_VERSION", "3.0");  // TODO - Choose the right version for swift
+            testRunnerSettings.put("PRODUCT_NAME", target.getProductName());
+            testRunnerSettings.put("OTHER_LDFLAGS", "-help");
+            testRunnerSettings.put("OTHER_CFLAGS", "-help");
+            testRunnerSettings.put("OTHER_SWIFT_FLAGS", "-help");
+            testRunnerSettings.put("SWIFT_INSTALL_OBJC_HEADER", "NO");
+            testRunnerSettings.put("SWIFT_OBJC_INTERFACE_HEADER_NAME", "$(PRODUCT_NAME).h");
+            testRunnerSettings.put("ALWAYS_SEARCH_USER_PATHS", "NO");
+            testRunnerSettings.put("ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME", "Stub Launch Image");
+            testRunnerSettings.put("MTL_ENABLE_DEBUG_INFO", "DEBUG");
+
+            debugSettings.put("PRODUCT_NAME", target.getProductName());
+            debugSettings.put("SWIFT_VERSION", "3.0");  // TODO - Choose the right version for swift
+
+            releaseSettings.put("PRODUCT_NAME", target.getProductName());
+            releaseSettings.put("SWIFT_VERSION", "3.0");  // TODO - Choose the right version for swift
+
+            return target;
+        }
+
         PBXLegacyTarget target = new PBXLegacyTarget(xcodeTarget.getName(), xcodeTarget.getProductType());
         target.setProductName(xcodeTarget.getProductName());
 
         NSDictionary debugSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Debug").getBuildSettings();
         NSDictionary releaseSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("Release").getBuildSettings();
+        NSDictionary testRunnerSettings = target.getBuildConfigurationList().getBuildConfigurationsByName().getUnchecked("__GradleTestRunner_Debug").getBuildSettings();
 
         target.setBuildToolPath(xcodeTarget.getGradleCommand());
         target.setBuildArgumentsString(xcodeTarget.getTaskName());
         target.setGlobalID(xcodeTarget.getId());
         File outputFile = xcodeTarget.getDebugOutputFile().get().getAsFile();
         target.setProductReference(new PBXFileReference(outputFile.getName(), outputFile.getAbsolutePath(), PBXReference.SourceTree.ABSOLUTE));
+
+        testRunnerSettings.put("PRODUCT_NAME", target.getProductName());
 
         File debugOutputFile = xcodeTarget.getDebugOutputFile().get().getAsFile();
         debugSettings.put("CONFIGURATION_BUILD_DIR", new NSString(debugOutputFile.getParentFile().getAbsolutePath()));

@@ -17,15 +17,17 @@
 package org.gradle.ide.xcode
 
 import org.gradle.ide.xcode.fixtures.AbstractXcodeIntegrationSpec
+import org.gradle.ide.xcode.fixtures.XcodebuildExecuter
 import org.gradle.nativeplatform.fixtures.app.SwiftApp
 import org.gradle.nativeplatform.fixtures.app.SwiftLib
+import org.gradle.nativeplatform.fixtures.app.SwiftLibWithXCTest
 import org.gradle.util.Requires
 import org.gradle.util.TestPrecondition
 
 class XcodeSingleSwiftProjectIntegrationTest extends AbstractXcodeIntegrationSpec {
     @Requires(TestPrecondition.XCODE)
     def "create xcode project executable"() {
-        executer.requireGradleDistribution()
+        executer.requireGradleDistribution().requireOwnGradleUserHomeDir()
 
         given:
         buildFile << """
@@ -136,6 +138,98 @@ apply plugin: 'swift-library'
 
         then:
         resultRelease.assertTasksExecuted(':compileReleaseSwift', ':linkRelease')
+    }
+
+    @Requires(TestPrecondition.XCODE)
+    def "returns error from Xcode when executable product doesn't have test configured"() {
+        executer.requireGradleDistribution().requireOwnGradleUserHomeDir()
+
+        given:
+        buildFile << """
+apply plugin: 'swift-executable'
+"""
+
+        def app = new SwiftApp()
+        app.writeToProject(testDirectory)
+        succeeds("xcode")
+
+        when:
+        def resultDebug = xcodebuild
+            .withProject(rootXcodeProject)
+            .withScheme("App Executable")
+            .fails(XcodebuildExecuter.XcodeAction.TEST)
+
+        then:
+        resultDebug.error.contains("Scheme App Executable is not currently configured for the test action.")
+
+        when:
+        def resultRelease = xcodebuild
+            .withProject(rootXcodeProject)
+            .withScheme("App Executable")
+            .withConfiguration("Release")
+            .fails(XcodebuildExecuter.XcodeAction.TEST)
+
+        then:
+        resultRelease.error.contains("Scheme App Executable is not currently configured for the test action.")
+    }
+
+    @Requires(TestPrecondition.XCODE)
+    def "returns error from Xcode when library product doesn't have test configured"() {
+        executer.requireGradleDistribution().requireOwnGradleUserHomeDir()
+
+        given:
+        buildFile << """
+apply plugin: 'swift-library'
+"""
+
+        def app = new SwiftApp()
+        app.writeToProject(testDirectory)
+        succeeds("xcode")
+
+        when:
+        def resultDebug = xcodebuild
+            .withProject(rootXcodeProject)
+            .withScheme("App SharedLibrary")
+            .fails(XcodebuildExecuter.XcodeAction.TEST)
+
+        then:
+        resultDebug.error.contains("Scheme App SharedLibrary is not currently configured for the test action.")
+
+        def resultRelease = xcodebuild
+            .withProject(rootXcodeProject)
+            .withScheme("App SharedLibrary")
+            .withConfiguration("Release")
+            .fails(XcodebuildExecuter.XcodeAction.TEST)
+
+        then:
+        resultRelease.error.contains("Scheme App SharedLibrary is not currently configured for the test action.")
+    }
+
+    @Requires(TestPrecondition.XCODE)
+    def "runs test from Xcode for library product"() {
+        executer.requireGradleDistribution().requireOwnGradleUserHomeDir()
+        def lib = new SwiftLibWithXCTest()
+
+        given:
+        settingsFile.text = """
+rootProject.name = 'greeter'
+"""
+        buildFile << """
+apply plugin: 'swift-library'
+apply plugin: 'xctest'
+"""
+
+        lib.writeToProject(testDirectory)
+        succeeds("xcode")
+
+        when:
+        def resultDebug = xcodebuild
+            .withProject(xcodeProject("greeter.xcodeproj"))
+            .withScheme("Greeter SharedLibrary")
+            .succeeds(XcodebuildExecuter.XcodeAction.TEST)
+
+        then:
+        lib.expectedSummaryOutputPattern.matcher(resultDebug.output).find()
     }
 
     def "new source files are included in the project"() {

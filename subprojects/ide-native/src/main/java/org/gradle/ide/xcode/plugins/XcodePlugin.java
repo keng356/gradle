@@ -26,14 +26,16 @@ import org.gradle.api.Transformer;
 import org.gradle.api.artifacts.PublishArtifact;
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier;
 import org.gradle.api.file.FileCollection;
-import org.gradle.api.file.RegularFile;
 import org.gradle.api.internal.artifacts.ivyservice.projectmodule.LocalComponentRegistry;
 import org.gradle.api.internal.artifacts.ivyservice.projectmodule.ProjectLocalComponentProvider;
 import org.gradle.api.internal.artifacts.publish.DefaultPublishArtifact;
 import org.gradle.api.internal.project.ProjectInternal;
+import org.gradle.api.invocation.Gradle;
 import org.gradle.api.model.ObjectFactory;
 import org.gradle.api.provider.Provider;
+import org.gradle.api.specs.Spec;
 import org.gradle.api.tasks.Delete;
+import org.gradle.api.tasks.Sync;
 import org.gradle.api.tasks.TaskContainer;
 import org.gradle.api.tasks.TaskDependency;
 import org.gradle.ide.xcode.XcodeExtension;
@@ -58,9 +60,13 @@ import org.gradle.language.cpp.plugins.CppLibraryPlugin;
 import org.gradle.language.swift.SwiftComponent;
 import org.gradle.language.swift.plugins.SwiftExecutablePlugin;
 import org.gradle.language.swift.plugins.SwiftLibraryPlugin;
+import org.gradle.language.swift.tasks.CreateSwiftBundle;
 import org.gradle.nativeplatform.tasks.AbstractLinkTask;
+import org.gradle.nativeplatform.test.xctest.SwiftXCTestSuite;
+import org.gradle.nativeplatform.test.xctest.plugins.XCTestConventionPlugin;
 import org.gradle.plugins.ide.internal.IdePlugin;
 import org.gradle.util.CollectionUtils;
+import org.gradle.util.GUtil;
 import org.gradle.util.Path;
 
 import javax.inject.Inject;
@@ -191,6 +197,60 @@ public class XcodePlugin extends IdePlugin {
                 configureXcodeForSwift(project, PBXTarget.ProductType.DYNAMIC_LIBRARY);
             }
         });
+
+        project.getPlugins().withType(XCTestConventionPlugin.class, new Action<XCTestConventionPlugin>() {
+            @Override
+            public void execute(XCTestConventionPlugin plugin) {
+                configureXcodeForXCTest(project, PBXTarget.ProductType.UNIT_TEST);
+            }
+        });
+    }
+
+    private void configureXcodeForXCTest(Project project, PBXTarget.ProductType productType) {
+        SwiftXCTestSuite component = project.getExtensions().getByType(SwiftXCTestSuite.class);
+        FileCollection sources = component.getSwiftSource();
+        xcode.getProject().getSources().from(sources);
+
+        // TODO - Reuse the logic from `swift-executable` or `swift-library` to determine the link task path
+        // TODO - should use the _install_ task for an executable
+        final CreateSwiftBundle bundleDebug = (CreateSwiftBundle) project.getTasks().getByName("bundleSwiftTest");
+        xcode.getProject().getSources().from(bundleDebug.getInformationFile());
+
+        // Sync the binary to the BUILT_PRODUCTS_DIR
+        final Sync syncTask = project.getTasks().create("xcode" + GUtil.toCamelCase(component.getName()) + "Sync", Sync.class, new Action<Sync>() {
+            @Override
+            public void execute(Sync task) {
+                task.dependsOn(bundleDebug);
+
+                final String buildProductsDir = System.getenv("BUILT_PRODUCTS_DIR");
+                task.onlyIf(new Spec<Task>() {
+                    @Override
+                    public boolean isSatisfiedBy(Task element) {
+                        return buildProductsDir != null;
+                    }
+                });
+                task.from(bundleDebug.getOutputDir());
+                task.into(buildProductsDir + "/" + bundleDebug.getOutputDir().getAsFile().get().getName());
+            }
+        });
+
+        // Xcode lifecycle task for testing
+        final Task xcodeTestTask = project.getTasks().create("buildXcode" + GUtil.toCamelCase(component.getName()), new Action<Task>() {
+            @Override
+            public void execute(Task task) {
+                task.dependsOn(syncTask);
+            }
+        });
+
+        // TODO - should reflect changes to module name
+        // $(CONFIGURATION) is replaced with the build configuration name, either Debug or Release
+        // TODO - this is too coincidental. Instead, perhaps add Xcode entry point tasks
+        String taskName = project.getPath() + ":${ACTION}Xcode" + GUtil.toCamelCase(component.getName());
+        XcodeTarget target = newTarget(component.getModule().get() + " " + toString(productType), component.getModule().get(), productType, toGradleCommand(project.getRootProject()), taskName, bundleDebug.getOutputDir().getAsFile(), bundleDebug.getOutputDir().getAsFile(), sources);
+        target.getImportPaths().from(component.getDevelopmentBinary().getCompileImportPath());
+        xcode.getProject().getTargets().add(target);
+
+//        getProjectTask().dependsOn(createSchemeTask(project.getTasks(), xcode.getProject()));
     }
 
     private void configureXcodeForSwift(Project project, PBXTarget.ProductType productType) {
@@ -206,11 +266,11 @@ public class XcodePlugin extends IdePlugin {
         // $(CONFIGURATION) is replaced with the build configuration name, either Debug or Release
         // TODO - this is too coincidental. Instead, perhaps add Xcode entry point tasks
         String taskName = project.getPath() + ":link$(CONFIGURATION)";
-        XcodeTarget target = newTarget(component.getModule().get() + " " + toString(productType), component.getModule().get(), productType, toGradleCommand(project.getRootProject()), taskName, linkDebug.getBinaryFile(), linkRelease.getBinaryFile(), sources);
+        XcodeTarget target = newTarget(component.getModule().get() + " " + toString(productType), component.getModule().get(), productType, toGradleCommand(project.getRootProject()), taskName, linkDebug.getBinaryFile().getAsFile(), linkRelease.getBinaryFile().getAsFile(), sources);
         target.getImportPaths().from(component.getDevelopmentBinary().getCompileImportPath());
-        xcode.getProject().setTarget(target);
+        xcode.getProject().getTargets().add(target);
 
-        getProjectTask().dependsOn(createSchemeTask(project.getTasks(), xcode.getProject()));
+        getProjectTask().dependsOn(createSchemeTask(project.getTasks(), component.getModule().get() + " " + toString(productType), xcode.getProject()));
     }
 
     private void configureForCppPlugin(final Project project) {
@@ -246,38 +306,47 @@ public class XcodePlugin extends IdePlugin {
         // $(CONFIGURATION) is replaced with the build configuration name, either Debug or Release
         // TODO - this is too coincidental. Instead, perhaps add Xcode entry point tasks
         String taskName = project.getPath() + ":link$(CONFIGURATION)";
-        XcodeTarget target = newTarget(targetName + " " + toString(productType), targetName, productType, toGradleCommand(project.getRootProject()), taskName, linkDebug.getBinaryFile(), linkRelease.getBinaryFile(), sources);
+        XcodeTarget target = newTarget(targetName + " " + toString(productType), targetName, productType, toGradleCommand(project.getRootProject()), taskName, linkDebug.getBinaryFile().getAsFile(), linkRelease.getBinaryFile().getAsFile(), sources);
         target.getHeaderSearchPaths().from(component.getDevelopmentBinary().getCompileIncludePath());
-        xcode.getProject().setTarget(target);
+        xcode.getProject().getTargets().add(target);
 
-        getProjectTask().dependsOn(createSchemeTask(project.getTasks(), xcode.getProject()));
+        getProjectTask().dependsOn(createSchemeTask(project.getTasks(), targetName + " " + toString(productType), xcode.getProject()));
     }
 
-    private static GenerateSchemeFileTask createSchemeTask(TaskContainer tasks, DefaultXcodeProject xcodeProject) {
+    private static GenerateSchemeFileTask createSchemeTask(TaskContainer tasks, String schemeName, DefaultXcodeProject xcodeProject) {
         // TODO - capitalise the target name in the task name
         // TODO - don't create a launch target for a library
-        GenerateSchemeFileTask schemeFileTask = tasks.create("xcodeScheme" + xcodeProject.getTarget().getName().replaceAll(" ", ""), GenerateSchemeFileTask.class);
+        String name = "xcodeScheme" + schemeName.replaceAll(" ", "");
+        GenerateSchemeFileTask schemeFileTask = tasks.maybeCreate(name, GenerateSchemeFileTask.class);
         schemeFileTask.setXcodeProject(xcodeProject);
-        schemeFileTask.setOutputFile(new File(xcodeProject.getLocationDir(), "xcshareddata/xcschemes/" + xcodeProject.getTarget().getName() + ".xcscheme"));
+        schemeFileTask.setOutputFile(new File(xcodeProject.getLocationDir(), "xcshareddata/xcschemes/" + schemeName + ".xcscheme"));
 
         return schemeFileTask;
     }
 
     private static String toGradleCommand(Project project) {
+        Gradle gradle = project.getGradle();
+        if (gradle.getGradleHomeDir() != null) {
+            if (gradle.getGradleHomeDir().getAbsolutePath().startsWith(gradle.getGradleUserHomeDir().getAbsolutePath())) {
+                if (project.file("gradlew").exists()) {
+                    return project.file("gradlew").getAbsolutePath();
+                }
+                return gradle.getGradleHomeDir().getAbsolutePath() + "/bin/gradle";
+            }
+            return gradle.getGradleHomeDir().getAbsolutePath() + "/bin/gradle";
+        }
+
         if (project.file("gradlew").exists()) {
             return project.file("gradlew").getAbsolutePath();
-        } else if (project.getGradle().getGradleHomeDir() != null){
-            return project.getGradle().getGradleHomeDir().getAbsolutePath() + "/bin/gradle";
-        } else {
-            return "gradle";
         }
+        return "gradle";
     }
 
-    private XcodeTarget newTarget(String name, String productName, PBXTarget.ProductType productType, String gradleCommand, String taskName, Provider<? extends RegularFile> debugBinaryFile, Provider<? extends RegularFile> releaseBinaryFile, FileCollection sources) {
+    private XcodeTarget newTarget(String name, String productName, PBXTarget.ProductType productType, String gradleCommand, String taskName, Provider<? extends File> debugBinaryFile, Provider<? extends File> releaseBinaryFile, FileCollection sources) {
         String id = gidGenerator.generateGid("PBXLegacyTarget", name.hashCode());
         XcodeTarget target = objectFactory.newInstance(XcodeTarget.class, name, id);
-        target.getDebugOutputFile().set(debugBinaryFile);
-        target.getReleaseOutputFile().set(releaseBinaryFile);
+        target.getDebugOutputFile().set(debugBinaryFile.get());
+        target.getReleaseOutputFile().set(releaseBinaryFile.get());
         target.setTaskName(taskName);
         target.setGradleCommand(gradleCommand);
         target.setOutputFileType(toFileType(productType));
@@ -297,6 +366,8 @@ public class XcodePlugin extends IdePlugin {
             return "Executable";
         } else if (PBXTarget.ProductType.DYNAMIC_LIBRARY.equals(productType)) {
             return "SharedLibrary";
+        } else if (PBXTarget.ProductType.UNIT_TEST.equals(productType)) {
+            return "XCTestBundle";
         } else {
             return "";
         }

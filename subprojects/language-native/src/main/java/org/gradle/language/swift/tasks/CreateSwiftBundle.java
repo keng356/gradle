@@ -16,19 +16,27 @@
 
 package org.gradle.language.swift.tasks;
 
+import com.google.common.io.Files;
 import org.gradle.api.Action;
 import org.gradle.api.DefaultTask;
 import org.gradle.api.Incubating;
+import org.gradle.api.UncheckedIOException;
 import org.gradle.api.file.CopySpec;
 import org.gradle.api.file.DirectoryVar;
+import org.gradle.api.file.RegularFile;
 import org.gradle.api.file.RegularFileVar;
 import org.gradle.api.tasks.InputFile;
+import org.gradle.api.tasks.Internal;
+import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputDirectory;
 import org.gradle.api.tasks.TaskAction;
 import org.gradle.language.swift.internal.SwiftStdlibToolLocator;
 import org.gradle.process.ExecSpec;
 
 import javax.inject.Inject;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.Charset;
 
 /**
  * Creates Apple bundle from compiled Swift code.
@@ -53,6 +61,26 @@ public class CreateSwiftBundle extends DefaultTask {
 
     @TaskAction
     void createBundle() {
+        RegularFile infoPlist = getInformationFile().get();
+        if (!infoPlist.getAsFile().exists()) {
+            infoPlist = getProject().getLayout().getBuildDirectory().file("Info.plist").get();
+            try {
+                Files.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+                    "<plist version=\"1.0\">\n" +
+                    "<dict>\n" +
+                    "\t<key>CFBundleExecutable</key>\n" +
+                    "\t<string>GreeterTest</string>\n" +
+                    "\t<key>CFBundleName</key>\n" +
+                    "\t<string>GreeterTest</string>\n" +
+                    "</dict>\n" +
+                    "</plist>", infoPlist.getAsFile(), Charset.defaultCharset());
+            } catch (IOException ex) {
+                throw new UncheckedIOException(ex);
+            }
+        }
+
+        final File infoPlistFile = infoPlist.getAsFile();
         getProject().copy(new Action<CopySpec>() {
             @Override
             public void execute(CopySpec copySpec) {
@@ -63,7 +91,7 @@ public class CreateSwiftBundle extends DefaultTask {
                     }
                 });
 
-                copySpec.from(getInformationFile(), new Action<CopySpec>() {
+                copySpec.from(infoPlistFile, new Action<CopySpec>() {
                     @Override
                     public void execute(CopySpec copySpec) {
                         copySpec.into("Contents");
@@ -100,8 +128,18 @@ public class CreateSwiftBundle extends DefaultTask {
         return executableFile;
     }
 
-    @InputFile
+    @Internal
     public RegularFileVar getInformationFile() {
         return informationFile;
+    }
+
+    @Optional
+    @InputFile
+    protected File getInputFile() {
+        File inputFile = informationFile.getAsFile().get();
+        if (inputFile.exists()) {
+            return inputFile;
+        }
+        return null;
     }
 }
