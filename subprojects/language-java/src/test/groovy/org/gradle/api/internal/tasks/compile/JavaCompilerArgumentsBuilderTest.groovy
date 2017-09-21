@@ -16,8 +16,8 @@
 package org.gradle.api.internal.tasks.compile
 
 import org.gradle.api.JavaVersion
+import org.gradle.api.internal.file.FileResolver
 import org.gradle.api.internal.file.collections.SimpleFileCollection
-import org.gradle.api.tasks.compile.CompileOptions
 import org.gradle.test.fixtures.file.TestNameTestDirectoryProvider
 import org.junit.Rule
 import spock.lang.Specification
@@ -28,6 +28,8 @@ class JavaCompilerArgumentsBuilderTest extends Specification {
     @Rule
     TestNameTestDirectoryProvider tempDir = new TestNameTestDirectoryProvider()
 
+    def fileResolver = Mock(FileResolver)
+
     def defaultOptionsWithoutClasspath = ["-g", "-sourcepath", "", "-proc:none", USE_UNSHARED_COMPILER_TABLE_OPTION]
     def defaultOptions = ["-g", "-sourcepath", "", "-proc:none", USE_UNSHARED_COMPILER_TABLE_OPTION, "-classpath", ""]
 
@@ -36,7 +38,7 @@ class JavaCompilerArgumentsBuilderTest extends Specification {
 
     def setup() {
         spec.tempDir = tempDir.file("tmp")
-        spec.compileOptions = new CompileOptions()
+        spec.compileOptions = new BackwardsCompatibleCompileOptions(fileResolver)
     }
 
     def "generates options for an unconfigured spec"() {
@@ -167,10 +169,20 @@ class JavaCompilerArgumentsBuilderTest extends Specification {
     }
 
     def "generates -bootclasspath option"() {
-        spec.compileOptions.bootClasspath = "/lib/lib1.jar:/lib/lib2.jar"
+        spec.compileOptions.bootstrapClasspath = new SimpleFileCollection([new File("/lib/lib1.jar"), new File("/lib/lib2.jar")])
 
         expect:
-        builder.build() == ["-bootclasspath", "/lib/lib1.jar:/lib/lib2.jar"] + defaultOptions
+        builder.build() == ["-bootclasspath", "/lib/lib1.jar${File.pathSeparator}/lib/lib2.jar"] + defaultOptions
+    }
+
+    def "generates -bootclasspath option via deprecated property"() {
+        when:
+        spec.compileOptions.bootClasspath = "/lib/lib1.jar${File.pathSeparator}/lib/lib2.jar"
+        def options = builder.build()
+
+        then:
+        options == ["-bootclasspath", "/lib/lib1.jar${File.pathSeparator}/lib/lib2.jar"] + defaultOptions
+        1 * fileResolver.resolveFiles("/lib/lib1.jar", "/lib/lib2.jar") >> new SimpleFileCollection(new File("/lib/lib1.jar"), new File("/lib/lib2.jar"))
     }
 
     def "generates -extdirs option"() {

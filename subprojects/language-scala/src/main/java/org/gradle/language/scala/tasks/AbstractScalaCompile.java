@@ -23,7 +23,9 @@ import com.google.common.collect.Sets;
 import org.gradle.api.Incubating;
 import org.gradle.api.Project;
 import org.gradle.api.file.FileCollection;
+import org.gradle.api.internal.file.FileResolver;
 import org.gradle.api.internal.tasks.compile.AnnotationProcessorDetector;
+import org.gradle.api.internal.tasks.compile.BackwardsCompatibleCompileOptions;
 import org.gradle.api.internal.tasks.compile.CompilerForkUtils;
 import org.gradle.api.internal.tasks.scala.DefaultScalaJavaJointCompileSpec;
 import org.gradle.api.internal.tasks.scala.DefaultScalaJavaJointCompileSpecFactory;
@@ -51,7 +53,7 @@ import java.util.Set;
 public abstract class AbstractScalaCompile extends AbstractCompile {
     protected static final Logger LOGGER = Logging.getLogger(AbstractScalaCompile.class);
     private final BaseScalaCompileOptions scalaCompileOptions;
-    private final CompileOptions compileOptions = new CompileOptions();
+    private final CompileOptions compileOptions = new BackwardsCompatibleCompileOptions(getServices().get(FileResolver.class));
 
     protected AbstractScalaCompile(BaseScalaCompileOptions scalaCompileOptions) {
         this.scalaCompileOptions = scalaCompileOptions;

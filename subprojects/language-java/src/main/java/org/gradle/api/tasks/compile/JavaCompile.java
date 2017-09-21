@@ -23,8 +23,10 @@ import org.gradle.api.file.FileCollection;
 import org.gradle.api.file.FileTree;
 import org.gradle.api.internal.changedetection.changes.IncrementalTaskInputsInternal;
 import org.gradle.api.internal.file.FileOperations;
+import org.gradle.api.internal.file.FileResolver;
 import org.gradle.api.internal.tasks.JavaToolChainFactory;
 import org.gradle.api.internal.tasks.compile.AnnotationProcessorDetector;
+import org.gradle.api.internal.tasks.compile.BackwardsCompatibleCompileOptions;
 import org.gradle.api.internal.tasks.compile.CleaningJavaCompiler;
 import org.gradle.api.internal.tasks.compile.CompilerForkUtils;
 import org.gradle.api.internal.tasks.compile.DefaultJavaCompileSpec;
@@ -75,7 +77,7 @@ import javax.inject.Inject;
  */
 @CacheableTask
 public class JavaCompile extends AbstractCompile {
-    private final CompileOptions compileOptions = new CompileOptions();
+    private final CompileOptions compileOptions = new BackwardsCompatibleCompileOptions(getServices().get(FileResolver.class));
     private JavaToolChain toolChain;
 
     public JavaCompile() {
