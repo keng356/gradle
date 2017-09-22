@@ -63,6 +63,7 @@ public class JavaVersionSpec extends Specification {
         JavaVersion.toVersion("1.9.0-internal") == JavaVersion.VERSION_1_9
         JavaVersion.toVersion("1.9.0-ea") == JavaVersion.VERSION_1_9
         JavaVersion.toVersion("9-ea") == JavaVersion.VERSION_1_9
+        JavaVersion.toVersion("9.0.0.15") == JavaVersion.VERSION_1_9
 
         JavaVersion.toVersion("10-ea") == JavaVersion.VERSION_1_10
         JavaVersion.toVersion("10-internal") == JavaVersion.VERSION_1_10

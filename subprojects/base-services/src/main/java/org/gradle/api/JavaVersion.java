@@ -54,7 +54,7 @@ public enum JavaVersion {
         }
 
         String name = value.toString();
-        Matcher matcher = Pattern.compile("(\\d{1,2})(-.+)?").matcher(name);
+        Matcher matcher = Pattern.compile("(\\d{1,2})([-.].+)?").matcher(name);
         if (matcher.matches()) {
             int index = Integer.parseInt(matcher.group(1)) - 1;
             if (index < values().length && values()[index].hasMajorVersion) {
